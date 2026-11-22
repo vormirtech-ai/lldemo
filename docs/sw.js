@@ -1,6 +1,6 @@
 // Lets the app open without internet (the cafe database is on the device anyway).
-const CACHE = 'cafe-loyalty-v1';
-const FILES = ['./', 'index.html', 'app.js', 'store.js', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'vendor/qrcode.js', 'vendor/jsQR.js'];
+const CACHE = 'cafe-loyalty-v2';
+const FILES = ['./', 'index.html', 'config.js', 'app.js', 'store.js', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'vendor/qrcode.js', 'vendor/jsQR.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

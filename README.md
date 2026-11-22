@@ -64,6 +64,29 @@ No customer data is ever uploaded to GitHub. It only stays on the phones.
 - **Customer lost their phone or cleared the browser:** they sign up again from any table QR with the **same mobile number**. On the next scan their old points and visits are there.
 - **Reminders & offers:** lists customers close to a reward and lets you send an offer to everyone who agreed. Each message opens in your WhatsApp or SMS ready to send, so it's free.
 
+## 🔔 Free push notifications (OneSignal)
+
+Customers can tap **"Yes, notify me"** on their card to get offers and reward reminders as phone notifications, in Chrome/Android and iPhone Safari. It costs nothing per message, unlike SMS or WhatsApp. OneSignal's free plan allows unlimited web push subscribers (up to 10,000 per send).
+
+**Set up once:**
+1. Sign up free at **onesignal.com** → **New App/Website** → choose **Web**.
+2. Choose **Typical Site** and fill in:
+   - Site Name: your cafe name
+   - Site URL: `https://vormirtech-ai.github.io`
+   - Icon: upload `docs/icon-512.png` (optional)
+   - Leave the bell and permission prompts **off**. The card has its own "Yes, notify me" button.
+3. Save, then copy the **App ID** (Settings → Keys & IDs).
+4. Put it in `docs/config.js`: `window.ONESIGNAL_APP_ID = 'your-app-id';` and push to GitHub.
+
+**iPhone customers:** Apple only allows web notifications for sites added to the Home Screen (iOS 16.4+). The card shows them the steps.
+
+**Sending a message:** In the admin panel, open **Reminders & offers → Open OneSignal to send**. Write the message (use `{{ first_name | default: "there" }}` for the name) and pick an audience:
+- everyone: **Subscribed Users**
+- close to a reward: segment with tag `visits_away` = `2`
+- reward waiting: tag `reward_ready` = `yes`
+
+Tags (first name, points, visits, visits away) update whenever the customer scans the "update" QR after a visit.
+
 ## ⚠️ Backups (important)
 
 All customer data is stored **only on the cafe phone**. If that phone is lost, factory-reset, or the browser's site data is cleared, the data is gone.
@@ -74,7 +97,7 @@ All customer data is stored **only on the cafe phone**. If that phone is lost, f
 ## Limits of a no-server setup
 
 - **One cafe phone holds the database.** A second phone at the counter would have its own separate data. Use one counter phone (or tablet) for scanning.
-- **No automatic push notifications.** Those need a server. Reminders and offers are sent from your own WhatsApp/SMS with one tap per customer instead.
+- **Push notifications are sent from the OneSignal dashboard**, not from the admin panel. Automatic reminders aren't set up; you send them to the "close to reward" segment yourself.
 - **Customer cards update when the customer scans the update QR** at the counter. If they skip it, their phone shows older points until next time, but the cafe phone always has the correct numbers.
 - The customer's card QR contains their name and mobile number so the cafe phone can add them. It's only shown on their screen at the counter.
 
