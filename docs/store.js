@@ -42,6 +42,7 @@ export const DEFAULT_SETTINGS = {
   reminder_template: 'Hi {{customer_name}}! You are only {{visits_away}} visits away from your next {{reward_name}} at {{cafe_name}} ☕',
   reminder_min_days: 7,
   instagram_url: '',
+  current_offer: '',
   wifi_ssid: '',
   wifi_password: '',
 };
@@ -267,7 +268,7 @@ export function cardUpdate(mobile, cardId) {
 }
 export function publicSettings() {
   const s = S.settings;
-  return { n: s.cafe_name, pv: s.points_per_visit, rt: s.reward_threshold, rn: s.reward_name, ig: s.instagram_url };
+  return { n: s.cafe_name, pv: s.points_per_visit, rt: s.reward_threshold, rn: s.reward_name, ig: s.instagram_url, of: s.current_offer };
 }
 
 export const fill = (template, vars) => String(template).replace(/\{\{\s*(\w+)\s*\}\}/g, (m, k) => (k in vars ? String(vars[k]) : m));

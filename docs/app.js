@@ -58,53 +58,40 @@ function onSubmit(form, handler) {
 let cleanups = [];
 const onLeave = (fn) => cleanups.push(fn);
 
-// ---------- web push notifications (OneSignal, free) ----------
-const PUSH_APP_ID = window.ONESIGNAL_APP_ID || '';
-const BASE_PATH = location.pathname.replace(/index\.html$/, '');
+// ---------- on-phone notifications (browser "Allow notifications"; no account, no server) ----------
+// The customer's own phone shows these when their card gets new information:
+// points after a visit, reward ready, new badges, and the cafe's current offer.
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const isStandalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-let oneSignalPromise = null;
-function oneSignal() {
-  if (!PUSH_APP_ID) return Promise.resolve(null);
-  oneSignalPromise ||= new Promise((resolve, reject) => {
-    window.OneSignalDeferred = window.OneSignalDeferred || [];
-    window.OneSignalDeferred.push(async (OS) => {
-      try {
-        await OS.init({
-          appId: PUSH_APP_ID,
-          serviceWorkerPath: BASE_PATH.slice(1) + 'push/onesignal/OneSignalSDKWorker.js',
-          serviceWorkerParam: { scope: BASE_PATH + 'push/onesignal/' },
-          notifyButton: { enable: false },
-          autoResubscribe: true,
-        });
-        resolve(OS);
-      } catch (e) { reject(e); }
-    });
-    const s = document.createElement('script');
-    s.src = 'https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js';
-    s.defer = true;
-    s.onerror = () => reject(new Error('Could not load notifications. Check your internet connection.'));
-    document.head.append(s);
-  });
-  return oneSignalPromise;
-}
-// Saves the customer's first name and progress as OneSignal tags, so the cafe can personalise
-// messages ({{ first_name }}) and target groups (e.g. visits_away = 2) from the OneSignal dashboard.
-async function syncPushTags(card) {
+const canNotify = () => 'Notification' in window;
+
+async function notify(title, body, tag = 'loyalty') {
+  if (!canNotify() || Notification.permission !== 'granted') return false;
+  const opts = { body, tag, icon: 'icon-192.png', badge: 'icon-192.png', data: { url: '#/card' } };
   try {
-    const OS = await oneSignal();
-    if (!OS || !OS.User.PushSubscription.optedIn) return;
-    const cafe = card.cafe || {};
-    const rt = Number(cafe.rt) || 0, pv = Number(cafe.pv) || 0;
-    const away = rt && pv ? Math.max(0, Math.ceil((rt - card.p) / pv)) : '';
-    await OS.login(card.i);
-    OS.User.addTags({
-      first_name: String(card.n).split(' ')[0],
-      points: String(card.p), visits: String(card.v),
-      visits_away: String(away), reward_ready: rt && card.p >= rt ? 'yes' : 'no',
-      table: card.t || '', last_update: card.at ? card.at.slice(0, 10) : '',
-    });
-  } catch (e) { console.warn('push tags', e); }
+    const reg = await Promise.race([navigator.serviceWorker?.ready, new Promise((r) => setTimeout(() => r(null), 3000))]);
+    if (reg) { await reg.showNotification(title, opts); return true; }
+    new Notification(title, opts); // desktop fallback
+    return true;
+  } catch { return false; }
+}
+
+// Compares the card before/after an update and tells the customer what changed.
+function notifyChanges(before, after) {
+  const cafe = after.cafe || {};
+  const rt = Number(cafe.rt) || 0, pv = Number(cafe.pv) || 0;
+  const lines = [];
+  const gained = after.p - (before.p || 0);
+  if (after.v > (before.v || 0) && gained > 0) lines.push(`+${gained} points! You now have ${after.p} points.`);
+  if (rt && after.p >= rt && !(before.p >= rt)) lines.push(`🎉 Your ${cafe.rn} is ready! Ask at the counter.`);
+  else if (rt && pv && after.p < rt && after.v > (before.v || 0)) {
+    const away = Math.ceil((rt - after.p) / pv);
+    lines.push(`Only ${away} more ${away === 1 ? 'visit' : 'visits'} to your ${cafe.rn}.`);
+  }
+  const oldBadges = new Set((before.b || []).map((b) => b[1]));
+  for (const [icon, name] of after.b || []) if (!oldBadges.has(name)) lines.push(`${isUrl(icon) ? '🏅' : icon} New badge: ${name}`);
+  if (lines.length) notify(cafe.n || 'Loyalty card', lines.join('\n'), 'card-update');
+  if (cafe.of && cafe.of !== (before.cafe || {}).of) setTimeout(() => notify(`${cafe.n || 'Cafe'} offer`, cafe.of, 'offer'), 1200);
 }
 
 // ---------- router ----------
@@ -223,7 +210,8 @@ function cardPage() {
     <section class="card"><h2>Badges</h2>
       ${c.b?.length ? `<div class="badges">${c.b.map(([icon, name]) => `<div class="badge"><div class="icon">${badgeIcon(icon)}</div><b class="small">${esc(name)}</b></div>`).join('')}</div>` : '<p class="muted small">Visit us to unlock your first badge.</p>'}
     </section>
-    ${PUSH_APP_ID ? '<section class="card" id="push-box"></section>' : ''}
+    ${cafe.of ? `<section class="card" style="border-color:var(--accent)"><h2>🎁 Today's offer</h2><p style="margin:0;white-space:pre-line">${esc(cafe.of)}</p></section>` : ''}
+    <section class="card" id="notify-box"></section>
     <section class="card">
       <h2>Keep your card safe</h2>
       <p class="small muted">Your card lives in this phone's browser. Save your card link so you can open it again if you clear your browser. On iPhone, also tap <b>Share → Add to Home Screen</b>.</p>
@@ -237,50 +225,38 @@ function cardPage() {
     catch { prompt('Copy your card link:', link); }
   };
   $('#share-link')?.addEventListener('click', () => navigator.share({ title: 'My loyalty card', url: link }).catch(() => {}));
-  renderPush(c);
-  syncPushTags(c);
+  renderNotifyBox(c);
 }
 
-async function renderPush(card) {
-  const box = $('#push-box');
+function renderNotifyBox(card) {
+  const box = $('#notify-box');
   if (!box) return;
-  const head = '<h2>Offers &amp; reminders</h2>';
-  if (isIOS && !isStandalone) {
-    box.innerHTML = `${head}<p class="small muted">To get offers and reward reminders on iPhone:</p>
+  const head = '<h2>🔔 Notifications</h2>';
+  if (isIOS && !isStandalone && !canNotify()) {
+    box.innerHTML = `${head}<p class="small muted">To get notifications on iPhone:</p>
       <ol class="small muted" style="padding-left:1.2rem;margin:0">
         <li>Tap <b>Copy my card link</b> below.</li>
         <li>Tap <b>Share</b> → <b>Add to Home Screen</b>.</li>
-        <li>Open the app from your home screen, paste your card link, then turn on notifications.</li>
+        <li>Open the app from your home screen, paste your card link, then allow notifications.</li>
       </ol>`;
     return;
   }
-  if (!('Notification' in window) || !('serviceWorker' in navigator)) {
-    box.innerHTML = `${head}<p class="small muted">This browser doesn't support notifications. Your card still works normally.</p>`;
-    return;
-  }
-  box.innerHTML = `${head}<p class="small muted">Loading…</p>`;
-  let OS;
-  try { OS = await oneSignal(); } catch (err) { box.innerHTML = `${head}<p class="small muted">${esc(err.message)}</p>`; return; }
-  const on = Notification.permission === 'granted' && OS.User.PushSubscription.optedIn;
-  box.innerHTML = head + (on
-    ? `<p class="small muted">Notifications are <b>on</b>. We'll let you know when a reward is close, plus occasional offers.</p><button class="secondary" id="push-off">Turn off notifications</button>`
-    : Notification.permission === 'denied'
-      ? '<p class="small muted">Notifications are blocked in your browser settings. You can allow them there any time.</p>'
-      : `<p class="small muted">Get a notification when you're close to a free reward, plus occasional offers. It's optional and you can turn it off any time.</p><button id="push-on">🔔 Yes, notify me</button>`);
-  $('#push-on')?.addEventListener('click', async (e) => {
+  if (!canNotify()) { box.innerHTML = `${head}<p class="small muted">This browser doesn't support notifications. Your card still works normally.</p>`; return; }
+  const perm = Notification.permission;
+  box.innerHTML = head + (perm === 'granted'
+    ? `<p class="small muted">Notifications are <b>on</b>. After each visit you'll be told your new points, when a reward is ready, new badges and our latest offer.</p><button class="ghost sm" id="notify-test">Send a test</button>`
+    : perm === 'denied'
+      ? '<p class="small muted">Notifications are blocked for this site. You can allow them in your browser\'s site settings any time.</p>'
+      : `<p class="small muted">Get a notification with your points, rewards and our latest offers. It's optional.</p><button id="notify-on">🔔 Allow notifications</button>`);
+  $('#notify-on')?.addEventListener('click', async (e) => {
     e.target.disabled = true;
-    try {
-      await OS.Notifications.requestPermission();
-      if (Notification.permission !== 'granted') { toast('No problem. Notifications stay off.'); return renderPush(card); }
-      await OS.User.PushSubscription.optIn();
-      await syncPushTags(card);
-      toast('Notifications are on 🔔');
-      setTimeout(() => renderPush(card), 800);
-    } catch (err) { toast(err.message || 'Could not turn on notifications', true); e.target.disabled = false; }
+    const r = await Notification.requestPermission();
+    if (r === 'granted') { toast('Notifications are on 🔔'); notify(card.cafe?.n || 'Loyalty card', `Hi ${String(card.n).split(' ')[0]}! You'll now get updates about your points and offers.`, 'welcome'); }
+    else toast('No problem. Notifications stay off.');
+    renderNotifyBox(card);
   });
-  $('#push-off')?.addEventListener('click', async () => {
-    try { await OS.User.PushSubscription.optOut(); toast('Notifications are off'); renderPush(card); }
-    catch (err) { toast(err.message, true); }
+  $('#notify-test')?.addEventListener('click', async () => {
+    if (!(await notify(card.cafe?.n || 'Loyalty card', 'Notifications are working ✓', 'test'))) toast('Could not show a notification on this browser', true);
   });
 }
 
@@ -304,9 +280,10 @@ function applyUpdate(payload) {
     else if (u.i !== c.i) toast('This update is for a different card', true);
     else if (c.at && u.at < c.at) toast('Your card already has newer points');
     else {
-      ls.set('lc_card', { ...c, p: u.p, v: u.v, b: u.b || [], at: u.at, cafe: { ...c.cafe, ...u.s } });
+      const next = { ...c, p: u.p, v: u.v, b: u.b || [], at: u.at, cafe: { ...c.cafe, ...u.s } };
+      ls.set('lc_card', next);
       toast('Card updated ✓');
-      syncPushTags(myCard());
+      notifyChanges(c, next);
     }
   } catch { toast('This update code is not valid', true); }
   location.replace(c ? '#/card' : '#/');
@@ -614,31 +591,14 @@ function offersTab(panel) {
       <span class="row" style="flex:none"><a class="btn sm" data-sent="${esc(c.mobile)}" data-tag="${tag}" href="https://wa.me/${waDigits(c.mobile)}?text=${encodeURIComponent(msg)}" target="_blank" rel="noopener">WhatsApp</a>
       <a class="btn secondary sm" data-sent="${esc(c.mobile)}" data-tag="${tag}" href="sms:${esc(c.mobile)}?body=${encodeURIComponent(msg)}">SMS</a></span></li>`;
 
-  const pushHelp = PUSH_APP_ID ? `
-    <section class="card">
-      <h2>🔔 Push notifications (free)</h2>
-      <p class="small muted">Customers who tapped "Yes, notify me" on their card get these as phone notifications. Nothing is charged per message.</p>
-      <a class="btn" href="https://dashboard.onesignal.com/" target="_blank" rel="noopener">Open OneSignal to send</a>
-      <details style="margin-top:10px"><summary class="small"><b>How to send</b></summary>
-        <ol class="small" style="padding-left:1.2rem">
-          <li>In OneSignal: <b>Messages → New Message → Push</b>.</li>
-          <li>Write the message. Use <code>{{ first_name | default: "there" }}</code> for the customer's name, e.g.<br><i>Hello {{ first_name | default: "there" }}! Enjoy 20% OFF on your next visit.</i></li>
-          <li>Audience: <b>Subscribed Users</b> for everyone, or a segment (below).</li>
-          <li>Click <b>Review and Send</b>.</li>
-        </ol>
-        <p class="small"><b>Useful segments</b> (Audience → Segments → New Segment → filter <b>User Tag</b>):</p>
-        <ul class="small" style="padding-left:1.2rem">
-          <li>Close to a reward: <code>visits_away</code> is <code>${esc(s.reminder_visits_away)}</code></li>
-          <li>Reward waiting: <code>reward_ready</code> is <code>yes</code></li>
-          <li>Regulars: <code>visits</code> greater than <code>5</code></li>
-        </ul>
-        <p class="small muted">Tags update each time a customer scans the "update" QR after a visit.</p>
-      </details>
-    </section>` : `
-    <section class="card"><h2>🔔 Push notifications</h2><p class="small muted">Not set up yet. Add your free OneSignal App ID to <code>docs/config.js</code> to let customers turn on notifications.</p></section>`;
   panel.innerHTML = `
-    ${pushHelp}
-    <div class="notice small" style="margin:14px 0">WhatsApp/SMS: messages open in your own WhatsApp or SMS app, ready to send with one tap. These only go to customers who agreed to receive offers.</div>
+    <form class="card" id="cur-offer">
+      <h2>🔔 Current offer (free notification)</h2>
+      <p class="small muted">Shown on every customer's card. Customers who allowed notifications also get it as a phone notification the next time they scan the update QR at the counter. Leave empty for no offer.</p>
+      <div class="field"><textarea name="current_offer" maxlength="300" placeholder="e.g. 20% OFF all cold coffees this weekend ☕">${esc(s.current_offer)}</textarea></div>
+      <div class="field"><button type="submit">Save offer</button></div>
+    </form>
+    <div class="notice small" style="margin:14px 0">WhatsApp/SMS: to reach customers who aren't in the cafe, messages open in your own WhatsApp or SMS app, ready to send with one tap. These only go to customers who agreed to receive offers.</div>
     <section class="card"><h2>Close to a reward</h2>
       <p class="small muted">Customers ${s.reminder_visits_away} or fewer visits away who haven't been reminded in ${s.reminder_min_days} days. Change these in Rules &amp; cafe.</p>
       <ul class="list">${close.map((c) => row(c, db.fill(s.reminder_template, vars(c)), 'reminder')).join('') || '<li class="muted small">Nobody right now.</li>'}</ul>
@@ -664,6 +624,12 @@ function offersTab(panel) {
     a.closest('li').style.opacity = '.45';
   }));
   markSent(panel);
+  onSubmit($('#cur-offer'), async (d) => {
+    s.current_offer = String(d.current_offer).trim().slice(0, 300);
+    db.audit(by(), 'offer.current', { offer: s.current_offer });
+    await db.save();
+    toast(s.current_offer ? 'Offer saved. Customers get it at their next card update.' : 'Offer removed');
+  });
   onSubmit($('#offer'), async (d) => {
     sessionStorage.setItem('lc_offer', d.message);
     const n = Number(d.n) || 0;
@@ -773,7 +739,8 @@ function badgesTab(panel) {
 // ---------- Table QR codes (one fixed QR per table) ----------
 function tablesTab(panel) {
   const s = db.S.settings;
-  const url = (label) => BASE_URL + '#/t/' + encodeURIComponent(label) + '/' + b64u(JSON.stringify(db.publicSettings()));
+  const { of: _offer, ...tableInfo } = db.publicSettings(); // printed codes don't carry the offer (it changes)
+  const url = (label) => BASE_URL + '#/t/' + encodeURIComponent(label) + '/' + b64u(JSON.stringify(tableInfo));
   panel.innerHTML = `
     <div class="row spread no-print" style="margin-bottom:12px">
       <form id="add" class="row"><input name="label" placeholder="e.g. Table 1" required maxlength="30"><button type="submit">Add table</button></form>
