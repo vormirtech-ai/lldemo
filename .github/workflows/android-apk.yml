@@ -1,0 +1,81 @@
+# Builds the installable Android APK on GitHub's servers (free for public and private repos within quota).
+# Run it from: GitHub repo → Actions → "Build Android APK" → Run workflow.
+# The APK appears under the finished run → Artifacts → catering-pos-apk.
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [catering-pos-apk]
+    tags: ['v*']
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests (totals, taxes, rounding, payments)
+        run: npm test
+
+      - name: Build web app (APK bundle, no service worker)
+        run: APK=1 npm run build
+
+      - name: Create Android project
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+          npx cap sync android
+
+      - name: App icon & splash
+        run: npx --yes @capacitor/assets generate --android --iconBackgroundColor '#1B2A41' --splashBackgroundColor '#1B2A41'
+        continue-on-error: true
+
+      - name: Build debug APK (installable)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      # Optional signed release APK. Add these repository secrets to enable it:
+      # ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+      - name: Build signed release APK
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        working-directory: android
+        run: |
+          echo "$KS" | base64 -d > release.keystore
+          ./gradlew assembleRelease --no-daemon
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)/apksigner sign \
+            --ks release.keystore --ks-pass pass:${{ secrets.ANDROID_KEYSTORE_PASSWORD }} \
+            --ks-key-alias ${{ secrets.ANDROID_KEY_ALIAS }} --key-pass pass:${{ secrets.ANDROID_KEY_PASSWORD }} \
+            --out app/build/outputs/apk/release/catering-pos-release.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk catering-pos-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: catering-pos-apk
+          path: |
+            catering-pos-debug.apk
+            android/app/build/outputs/apk/release/catering-pos-release.apk
+          if-no-files-found: warn

@@ -1,0 +1,8 @@
+node_modules
+dist
+dist-apk
+android
+android-shell/build
+android-shell/tools
+*.keystore
+.env

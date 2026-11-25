@@ -1,0 +1,9 @@
+{
+  "appId": "com.vormirtech.cateringpos",
+  "appName": "Catering POS",
+  "webDir": "dist-apk",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#1B2A41"
+  }
+}
